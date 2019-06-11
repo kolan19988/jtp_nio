@@ -3,6 +3,8 @@ package ru.jettech.jtp.jtptank1.service;
 import android.content.Context;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
+import android.os.AsyncTask;
+import android.os.StrictMode;
 import android.util.Log;
 
 import java.io.IOException;
@@ -12,6 +14,7 @@ import java.nio.ByteOrder;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -22,11 +25,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import ru.jettech.jtp.jtptank1.util.Constants;
 
 public class TCPClient {
-
     /*
         VARIABLES
     */
     private static final String TAG = "JTPTank1.TCPClient"; //NON-NLS
+    private static final String TAG_TEST = "TEST-TAG";
     private static final long CONNECT_LIFE_TIME = 5 * 1000; // 5sec
     private static final long SERVER_KICK_INTERVAL = 2 * 1000; // 2sec
     private static final long SLOT_WAIT_TIME = 200; // 0.2sec
@@ -96,6 +99,18 @@ public class TCPClient {
         }
     }
 
+    private class SendMessageTask extends AsyncTask<ByteBuffer, Void, Void> {
+
+        @Override
+        protected Void doInBackground(ByteBuffer... byteBuffers) {
+            Log.i(TAG, "buffer length " + byteBuffers[0].array().length);
+
+            doSendData(byteBuffers[0].array(), KEY_WRITE);
+            return null;
+        }
+    }
+
+
     /*
         GETTERS
            &
@@ -139,6 +154,9 @@ public class TCPClient {
             mChannel = SocketChannel.open();
             mChannel.configureBlocking(false);
 
+            StrictMode.ThreadPolicy policy = new StrictMode.ThreadPolicy.Builder().permitAll().build();
+            StrictMode.setThreadPolicy(policy);
+
             int ops = KEY_CONNECT | KEY_WRITE | KEY_READ;
             mChannelKey = mChannel.register(mSelector, ops);
             Log.i(TAG, "init and configure finished");
@@ -169,8 +187,9 @@ public class TCPClient {
         if (!isConnected()) {
             try {
                 Log.i(TAG + mServerAddr, "Socket connection");
-                mChannel = SocketChannel.open(mServerAddress);
+
                 try {
+                    mChannel = SocketChannel.open(mServerAddress);
                     mLastActTime = System.currentTimeMillis();
                     setConnected(checkConnection());
                 } catch (Exception e) {
@@ -188,7 +207,21 @@ public class TCPClient {
 
         connect();
         if (!isConnected()) return;
+        Log.i(TAG_TEST, "connected");
         setCurrentOperation(KEY_WRITE | KEY_READ);
+        Log.i(TAG_TEST, "set operations suc");
+
+        select(ByteBuffer.wrap(buff));
+    }
+
+    private void doSendData(byte[] buff, int ops) {
+
+        connect();
+        if (!isConnected()) return;
+        Log.i(TAG_TEST, "connected");
+        setCurrentOperation(ops);
+        Log.i(TAG_TEST, "set operations suc");
+
         select(ByteBuffer.wrap(buff));
     }
 
@@ -215,9 +248,9 @@ public class TCPClient {
 
             setCurrentOperation(KEY_WRITE);
             select(buff);
-
             setCurrentOperation(KEY_READ);
             select(buff);
+
             return true;
         } catch (Exception e) {
             Log.e(TAG, "checkConnection(): Error", e);
@@ -234,6 +267,8 @@ public class TCPClient {
 
     private void select(ByteBuffer buffer) {
         try {
+            Log.d(TAG_TEST, "thread name: " + Thread.currentThread().getName());
+            printBuff(buffer);
             int numConnections = mSelector.selectNow();
 
             if (numConnections > 0) {
@@ -248,11 +283,13 @@ public class TCPClient {
                     }
 
                     if (mChannelKey.isReadable() && mChannelKey.isValid()) {
+                        Log.i(TAG_TEST, "readable");
                         Log.i(TAG, "before read");
                         read();
                         Log.i(TAG, "after read");
                     }
                     if (mChannelKey.isWritable() && mChannelKey.isValid()) {
+                        Log.i(TAG_TEST, "writable");
                         Log.i(TAG, "before write");
                         write(buffer);
                         Log.i(TAG, "before write");
@@ -269,25 +306,39 @@ public class TCPClient {
     private void write(ByteBuffer buffer) {
         try {
             Log.i(TAG, "trying to send data");
-            Log.i(TAG, buffer.limit() + " - " +
-                            // b.getChar(0) + b.getChar(2) + "," +
-                            buffer.getFloat(0) + "," +
-                            buffer.getFloat(4) + "," +
-                            buffer.getFloat(8) + "," +
-                            buffer.getLong(12) + "," +
-                            buffer.getInt(20) + "," +
-                            buffer.getInt(24) + "," +
-                            buffer.getInt(28) + "," +
-                            buffer.getFloat(32) // + "," +
-                    // b.getChar(40) + b.getChar(42)
-            );
+            if (buffer.limit() == 36) {
+                Log.i(TAG, buffer.limit() + " - " +
+                                // b.getChar(0) + b.getChar(2) + "," +
+                                buffer.getFloat(0) + "," +
+                                buffer.getFloat(4) + "," +
+                                buffer.getFloat(8) + "," +
+                                buffer.getLong(12) + "," +
+                                buffer.getInt(20) + "," +
+                                buffer.getInt(24) + "," +
+                                buffer.getInt(28) + "," +
+                                buffer.getFloat(32) // + "," +
+                        // b.getChar(40) + b.getChar(42)
+                );
+            }
+
             buffer.rewind();
             int bytesWrite = mChannel.write(buffer);
             Log.i(TAG, "bytes write " + bytesWrite);
+
+            if (bytesWrite == -1) {
+                setConnected(false);
+                //TODO do anything if connection is lost
+            }
             mChannelKey.interestOps(mChannelKey.interestOps() & ~KEY_WRITE);
         } catch (IOException e) {
             Log.e("write error", e.getMessage());
         }
+    }
+
+    void printBuff(ByteBuffer buffer) {
+        ByteBuffer bb = buffer;
+        Log.i("BUFFER", Arrays.toString(bb.array()));
+
     }
 
     private void read() {
@@ -310,6 +361,10 @@ public class TCPClient {
             Log.i(TAG, "server echo: " + convertedString.toString());
 
             Log.i(TAG, "bytes read " + bytesRead);
+            if (bytesRead == -1) {
+                setConnected(false);
+                //TODO do anything if connection is lost
+            }
             mChannelKey.interestOps(mChannelKey.interestOps() & ~KEY_READ);
 
         } catch (IOException e) {
@@ -317,12 +372,18 @@ public class TCPClient {
         }
     }
 
+
     private void sendGoodBy() {
         try {
+
             byte[] msg = "jtp_end".getBytes();
-            //TODO send data process
-            setCurrentOperation(KEY_WRITE | KEY_READ);
-            select(ByteBuffer.wrap(msg));
+            SendMessageTask task = new SendMessageTask();
+            task.execute(ByteBuffer.wrap(msg));
+
+            while (task.getStatus() != AsyncTask.Status.FINISHED) {
+
+            }
+            task.cancel(true);
 
         } catch (Exception e) {
             Log.e(TAG, "goodBy: Error", e);
@@ -337,9 +398,10 @@ public class TCPClient {
         if (isConnected()) {
             try {
                 sendGoodBy();
-                setConnected(false);
                 Log.e(TAG + mServerAddr, "disconnect: Close Socket");
                 mChannel.close();
+                setConnected(false);
+
             } catch (Exception e) {
                 Log.e(TAG, "disconnect error", e);
             }
